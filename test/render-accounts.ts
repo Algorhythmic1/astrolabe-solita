@@ -48,7 +48,6 @@ async function checkRenderedAccount(
     serializers,
     FORCE_FIXABLE_NEVER,
     PROGRAM_ID,
-    (_: string) => null,
     opts.hasImplicitDiscriminator ?? true
   )
 

@@ -11,11 +11,7 @@ import {
   BEET_SOLANA_PACKAGE,
   hasPaddingAttr,
   IdlAccount,
-  isIdlTypeDataEnum,
-  isIdlTypeDefined,
-  isIdlTypeScalarEnum,
   PrimitiveTypeKey,
-  ResolveFieldType,
   SOLANA_WEB3_EXPORT_NAME,
   SOLANA_WEB3_PACKAGE,
   TypeMappedSerdeField,
@@ -49,7 +45,6 @@ class AccountRenderer {
     private readonly account: IdlAccount,
     private readonly fullFileDir: PathLike,
     private readonly hasImplicitDiscriminator: boolean,
-    private readonly resolveFieldType: ResolveFieldType,
     private readonly programId: string,
     private readonly typeMapper: TypeMapper,
     private readonly serializers: CustomSerializers
@@ -80,6 +75,12 @@ class AccountRenderer {
   }
 
   private getPaddingField() {
+    if (!this.account.type || !Array.isArray(this.account.type.fields)) {
+      console.error('Malformed account:', this.account);
+      throw new Error(
+        `Account ${this.account.name} is missing a type or fields array in the IDL.`
+      );
+    }
     const paddingField = this.account.type.fields.filter((f) =>
       hasPaddingAttr(f)
     )
@@ -101,60 +102,27 @@ class AccountRenderer {
     return this.typeMapper.mapSerdeFields(this.account.type.fields)
   }
 
+  // Utility to convert snake_case to camelCase
+  private toCamelCase(s: string) {
+    return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  }
+
   // -----------------
   // Rendered Fields
   // -----------------
   private getTypedFields() {
-    return this.account.type.fields.map((f) => {
-      const tsType = this.typeMapper.map(f.type, f.name)
-      return { name: f.name, tsType, isPadding: hasPaddingAttr(f) }
+    return this.account.type.fields.map((field) => {
+      const tsType = this.typeMapper.map(field.type, field.name)
+      return {
+        name: this.toCamelCase(field.name),
+        tsType: tsType ?? 'any',
+        isPadding: hasPaddingAttr(field),
+      }
     })
   }
 
   private getPrettyFields() {
-    return this.account.type.fields
-      .filter((f) => !hasPaddingAttr(f))
-      .map((f) => {
-        if (f.type === 'publicKey') {
-          return `${f.name}: this.${f.name}.toBase58()`
-        }
-        if (
-          f.type === 'u64' ||
-          f.type === 'u128' ||
-          f.type === 'u256' ||
-          f.type === 'u512' ||
-          f.type === 'i64' ||
-          f.type === 'i128' ||
-          f.type === 'i256' ||
-          f.type === 'i512'
-        ) {
-          return `${f.name}: (() => {
-        const x = <{ toNumber: () => number }>this.${f.name}
-        if (typeof x.toNumber === 'function') {
-          try {
-            return x.toNumber()
-          } catch (_) { return x }
-        }
-        return x
-      })()`
-        }
-
-        if (isIdlTypeDefined(f.type)) {
-          const resolved = this.resolveFieldType(f.type.defined)
-
-          if (resolved != null && isIdlTypeScalarEnum(resolved)) {
-            const tsType = this.typeMapper.map(f.type, f.name)
-            const variant = `${tsType}[this.${f.name}`
-            return `${f.name}: '${f.type.defined}.' + ${variant}]`
-          }
-          if (resolved != null && isIdlTypeDataEnum(resolved)) {
-            // TODO(thlorenz): Improve rendering of data enums to include other fields
-            return `${f.name}: this.${f.name}.__kind`
-          }
-        }
-
-        return `${f.name}: this.${f.name}`
-      })
+    return this.getTypedFields().map((f) => `${f.name}: this.${f.name}`).filter(Boolean)
   }
 
   // -----------------
@@ -174,19 +142,11 @@ class AccountRenderer {
   private renderAccountDataArgsType(
     fields: { name: string; tsType: string; isPadding: boolean }[]
   ) {
-    const renderedFields = fields
+    const argsFields = fields
       .filter((f) => !f.isPadding)
-      .map((f) => colonSeparatedTypedField(f))
-      .join('\n  ')
-
-    return `/**
- * Arguments used to create {@link ${this.accountDataClassName}}
- * @category Accounts
- * @category generated
- */
-export type ${this.accountDataArgsTypeName} = {
-  ${renderedFields}
-}`
+      .map((f) => `${f.name}: ${f.tsType}`)
+      .join(',\n  ')
+    return `export type ${this.accountDataArgsTypeName} = {\n  ${argsFields}\n}`
   }
 
   private renderByteSizeMethods() {
@@ -484,7 +444,6 @@ export function renderAccount(
   serializers: CustomSerializers,
   forceFixable: ForceFixable,
   programId: string,
-  resolveFieldType: ResolveFieldType,
   hasImplicitDiscriminator: boolean
 ) {
   const typeMapper = new TypeMapper(
@@ -497,7 +456,6 @@ export function renderAccount(
     account,
     fullFileDir,
     hasImplicitDiscriminator,
-    resolveFieldType,
     programId,
     typeMapper,
     serializers

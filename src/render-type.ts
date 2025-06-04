@@ -39,12 +39,17 @@ class TypeRenderer {
     this.beetArgName = beetVarNameFromTypeName(ty.name)
   }
 
+  // Utility to convert snake_case to camelCase
+  private toCamelCase(s: string) {
+    return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+  }
+
   // -----------------
   // Rendered Fields
   // -----------------
   private renderTypeField = (field: IdlField) => {
     const typescriptType = this.typeMapper.map(field.type, field.name)
-    return `${field.name}: ${typescriptType}`
+    return `${this.toCamelCase(field.name)}: ${typescriptType}`
   }
 
   private renderTypeScriptType() {
@@ -67,9 +72,7 @@ class TypeRenderer {
       .map((field) => this.renderTypeField(field))
       .join(',\n  ')
 
-    const code = `export type ${this.upperCamelTyName} = {
-  ${fields}
-}`
+    const code = `export type ${this.upperCamelTyName} = {\n  ${fields}\n}`
     return code
   }
 

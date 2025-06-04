@@ -61,7 +61,19 @@ export type IdlType =
 
 // User defined type.
 export type IdlTypeDefined = {
-  defined: string
+  defined: string | { name: string }
+}
+
+export function getDefinedTypeName(ty: IdlTypeDefined): string {
+  return typeof ty.defined === 'string' ? ty.defined : ty.defined.name
+}
+
+export function isIdlTypeDefined(ty: IdlType): ty is IdlTypeDefined {
+  if ((ty as any).defined !== undefined) {
+    const d = (ty as any).defined
+    return typeof d === 'string' || (typeof d === 'object' && d !== null && typeof d.name === 'string')
+  }
+  return false
 }
 
 export type IdlTypeOption = {
@@ -268,10 +280,6 @@ export function isIdlTypeArray(ty: IdlType): ty is IdlTypeArray {
 export function asIdlTypeArray(ty: IdlType): IdlTypeArray {
   assert(isIdlTypeArray(ty))
   return ty
-}
-
-export function isIdlTypeDefined(ty: IdlType): ty is IdlTypeDefined {
-  return (ty as IdlTypeDefined).defined != null
 }
 
 export function isIdlTypeEnum(

@@ -1,0 +1,512 @@
+New IDL
+This is a rewrite of the IDL which concerns:
+
+IDL type specification
+IDL generation
+Client implementation (TS)
+The following sections serve as a way to provide an overview of the changes, however, it's not feasible to go over every single change. For this reason, only the larger changes to the public API will be in scope, and everything else, such as the implementation details, will be skipped.
+
+Problem
+Solana's programming model does not have any kind of IDL (or ABI) that can be used for interacting with programs easily. The Anchor IDL specification was created in order to fix this problem — while it managed to decrease friction and increase composability, the current iteration of the IDL has major problems that are not easily fixable without breaking changes.
+
+IDL related issues are also the most reported issue by category in the Anchor repository.
+
+What's new
+There is a lot to talk about, we'll go over the main changes while briefly explaining why the change is necessary by comparing the old (before this PR) and the new (this PR) implementation.
+
+Here is a comparison of the old and new IDL for this program.
+
+Type definition files:
+
+Rust
+TypeScript
+Address
+The program address used to be stored in metadata.address field and was only populated after the program got deployed. That meant rebuilding a deployed program would cause the address information to get lost.
+
+Now, address is a required top-level field that's updated on each build.
+
+Metadata
+metadata field used to be an untyped object. Now, it has the following fields:
+
+type IdlMetadata = {
+  name: string;
+  version: string;
+  spec: string;
+  description?: string;
+  repository?: string;
+  dependencies?: IdlDependency[];
+  contact?: string;
+};
+name and version fields used to be top-level fields but they are more fitting as a property of metadata because they're not being used for program interactions.
+
+spec: IDL specification version.
+
+description: Description of the program.
+
+repository: URL to the program's repository.
+
+dependencies: Program dependencies. This is currently empty by default, however, including Anchor and Solana versions can be useful.
+
+contact: Program contact information similar to security.txt.
+
+Potential fields to add:
+
+origin: Origin (which tool was used to generate the IDL)
+toolchain: Toolchain information from [toolchain] of Anchor.toml
+Accounts and events as type
+Account and event type information used to be stored inside their own properties, accounts and events respectively. This created a problem where types weren't being found in some cases because type definitions didn't exist in the types field.
+
+Now, all defined types are stored in types field, including account an event types. accounts and events field still exist and they act as a pointer to the actual type definition:
+
+{
+  "accounts": [{ "name": "MyAccount" }],
+  "events": [{ "name": "MyEvent" }],
+  "types": [
+    {
+      "name": "MyAccount"
+      // Definition...
+    },
+    {
+      "name": "MyEvent"
+      // Definition...
+    }
+  ]
+}
+Discriminator
+Discriminator data was not part of the IDL because Anchor discriminators are deterministic and are calculated by their type name. However, there are several problems with this approach:
+
+There is no flexibility.
+Derivation logic is duplicated on the client side.
+Non-Anchor programs cannot use it.
+Interface implementations such as the SPL Transfer Hook Interface require setting custom instruction discriminators.
+In the new version, all instructions, accounts and events have a new field discriminator that is the byte representation of their discriminator:
+
+"accounts": [
+  {
+    "name": "MyAccount",
+    "discriminator": [246, 28, 6, 87, 251, 45, 50, 42]
+  }
+]
+With this change, TypeScript client uses the discriminators from the IDL and no longer derives them separately.
+
+Unit and tuple struct
+Unit struct:
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+struct UnitStruct;
+generates:
+
+{
+  "name": "UnitStruct",
+  "type": { "kind": "struct" }
+}
+and tuple (unnamed) struct:
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+struct TupleStruct(u64, String);
+generates:
+
+{
+  "name": "TupleStruct",
+  "type": {
+    "kind": "struct",
+    "fields": ["u64", "string"]
+  }
+}
+In TS package, unit structs are passed in as {} and tuple structs as [...] similar to how enum variants work.
+
+Generics
+Generic types and generic array length is supported both in the IDL and in TS package. Here is an example using both:
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct GenericStruct<T, const N: usize> {
+    field: [T; N],
+}
+generates the following IDL type:
+
+{
+  "name": "GenericStruct",
+  "generics": [
+    {
+      "kind": "type",
+      "name": "T"
+    },
+    {
+      "kind": "const",
+      "name": "N",
+      "type": "usize"
+    }
+  ],
+  "type": {
+    "kind": "struct",
+    "fields": [
+      {
+        "name": "field",
+        "type": {
+          "array": [{ "generic": "T" }, { "generic": "N" }]
+        }
+      }
+    ]
+  }
+}
+can be used as an instruction argument (or type field):
+
+pub fn generic(ctx: Context<Generic>, generic_arg: GenericStruct<u16, 4>) -> Result<()> {
+    Ok(())
+}
+the instruction argument in the IDL:
+
+"args": [
+  {
+    "name": "generic_arg",
+    "type": {
+      "defined": {
+        "name": "GenericStruct",
+        "generics": [
+          { "kind": "type", "type": "u16" },
+          { "kind": "const", "value": "4" }
+        ]
+      }
+    }
+  }
+]
+calling from TS:
+
+program.methods.generic({ field: [1, 2, 3, 4] }).rpc();
+Serialization
+One of the early decisions Anchor made was using borsh as the default serialization method. While it is still the most used serialization method in the Solana ecosystem, there are other serialization methods that are being used, such as bytemuck for zero copy operations.
+
+The old IDL did not have any fields to represent which serialization format was being used, forcing all data to be de/serialized using borsh.
+
+In the new IDL, all types have a new field called serialization. The field defaults to borsh and it's not stored if it's the default value in order to reduce duplication and save space.
+
+Current supported serialization methods are:
+
+borsh (default)
+bytemuck
+bytemuckunsafe
+Custom
+For example, creating a zero copy struct:
+
+#[zero_copy]
+pub struct ZcStruct {
+    pub bytes: [u8; 32],
+}
+generates:
+
+{
+  "name": "ZcStruct",
+  "serialization": "bytemuck"
+}
+Representation
+Rust allows modifying memory representations of user-defined types with the repr attribute but this data was not stored in the IDL. For this reason, using anything other than the default representation was very hard to work with.
+
+In the new IDL, memory representation information is stored in the repr field. It has 3 properties:
+
+kind
+
+Supported values:
+
+rust (default)
+c
+transparent
+For example:
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+#[repr(transparent)]
+pub struct ReprStruct {
+    // ...
+}
+generates:
+
+{
+  "name": "ReprStruct",
+  "repr": { "kind": "transparent" }
+}
+align
+
+Alignment must be a power of 2, for example:
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+#[repr(align(4))]
+pub struct ReprStruct {
+    // ...
+}
+generates:
+
+{
+  "name": "ReprStruct",
+  "repr": { "kind": "rust", "align": 4 }
+}
+packed
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+#[repr(C, packed)]
+pub struct ReprStruct {
+    // ...
+}
+generates:
+
+{
+  "name": "ReprStruct",
+  "repr": { "kind": "c", "packed": true }
+}
+Generation
+For starters, Anchor initially started generating IDLs by parsing the program source code. While this was very fast, it also had severe limitations for generation because everything needed to be parsed and implemented manually, and there was no way to evaluate expressions.
+
+On Anchor 0.29.0, a new IDL generation method was introduced (#2011) that allowed compiling program code in order to generate the IDL. However, this resulted in another problem — multiple ways to generate the IDL. This is a problem because:
+
+Making changes to the IDL becomes much harder because each change needs to be implemented for all generation methods
+Not all features can be implemented on a specific generation method as each generation method has its own unique advantages and disadvantages
+To solve this problem, a new generation method has been added that leverages both parsing and building. It can be thought of as the merge of the existing idl-parse and idl-build features.
+
+Expression evaluation
+A simple way to demonstrate expression evaluation is using the #[constant] attribute:
+
+#[constant]
+pub const MY_ACCOUNT_ALIGNMENT: u8 = std::mem::align_of::<MyAccount>() as u8;
+With the old method (parsing):
+
+{
+  "name": "MY_ACCOUNT_ALIGNMENT",
+  "type": "u8",
+  "value": "std :: mem :: align_of :: < MyAccount > () as u8"
+}
+and the new method (build):
+
+{
+  "name": "MY_ACCOUNT_ALIGNMENT",
+  "type": "u8",
+  "value": "1"
+}
+Type alias resolution
+Type alias support was added on Anchor 0.29.0 (#2637). However, aliases with generics were not supported:
+
+pub type Pubkeys = Vec<Pubkey>; // Worked
+pub type OptionalElements<T> = Vec<Option<T>> // Did not work
+Although the new IDL specification supports type aliases as a user-defined type, all type aliases currently resolve to the actual type they hold. For example, when OptionalElements from above is used in a struct field:
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+pub struct MyStruct {
+    pubkeys: OptionalElements<Pubkey>,
+}
+generates:
+
+{
+  "name": "MyStruct",
+  "type": {
+    "kind": "struct",
+    "fields": [
+      {
+        "name": "pubkeys",
+        "type": {
+          "vec": {
+            "option": "pubkey"
+          }
+        }
+      }
+    ]
+  }
+}
+Resolving type aliases before serializing them into the IDL doesn't change the functionality but it makes working with types easier from the client side.
+
+External types
+One of the biggest pain points of the old IDL was the lack of support for external types. Some improvements have been made with the idl-build feature introduced in 0.29.0 (#2011), however, it was only limited to a subset of Anchor programs that specifically had idl-build feature. For example, using UnixTimestamp from solana-program:
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+pub struct MyStruct {
+    timestamp: anchor_lang::solana_program::clock::UnixTimestamp,
+}
+would not work with the idl-build feature. In fact, idl-build wouldn't even work if the UnixTimestamp type alias was defined inside our crate (#2640).
+
+On the other hand, with the new generation method, the above example generates:
+
+{
+  "name": "NamedStruct",
+  "type": {
+    "kind": "struct",
+    "fields": [
+      {
+        "name": "timestamp",
+        "type": "i64"
+      }
+    ]
+  }
+}
+This kind of resolution for non-Anchor crates is not perfect; currently only type aliases are supported but it can be extended to support structs and enums in the future.
+
+To recap, any type can be used from other Anchor programs and some from non-Anchor crates. So what if you want to include a type that doesn't fit into the previous categories? This is where the next section, customization, comes in.
+
+Customization
+Customization refers to manually specifying how a type should be stored in the IDL instead of letting Anchor decide it. This is particularly useful with the New Type Idiom for external types.
+
+For example, let's say you use u256 from an external math library:
+
+Wrap it:
+
+pub struct U256(external_math_library::u256);
+Implement AnchorDe/Serialize:
+
+impl AnchorDeserialize for U256 {
+  // ...
+}
+
+impl AnchorSerialize for U256 {
+  // ...
+}
+Implement IdlBuild:
+
+#[cfg(feature = "idl-build")]
+impl IdlBuild for U256 {
+  // ...
+}
+Any type can be included in the IDL as long as it can be represented in the IDL.
+
+Case conversion
+Lack of consistent casing has caused a lot of problems for Anchor developers, and the IDL is not an exception. Even in the TypeScript library, some things require using camelCase while others require using PascalCase or snake_case.
+
+The internals of the TS library are filled with case conversion logic before making string comparison and this also forces other libraries who build on top of Anchor to do the same.
+
+Case conversion becomes inevitable when something is being used cross-language, especially when the languages (Rust, JS) have strictly different conventions on this topic. However, it is still possible to make it consistent so that people know what to expect. Here are the main principles this PR follows regarding case conversion:
+
+Any value defined by the user is put to the IDL unedited e.g. my_instruction is stored as my_instruction instead of myInstruction.
+All non-user defined string values are in lowercase, e.g. pubkey (renamed from publicKey), struct, borsh.
+All IDL fields are currently one word, making it easier to work with the IDL in other languages.
+TypeScript library is fully in camelCase.
+IDL constant is no longer exported from target/types (the type export remains).
+Account resolution
+Account resolution refers to the ability of clients to resolve accounts without having to manually specify them when sending transactions. This feature has been supported behind seeds feature flag for a while now but most projects either don't use it or don't even know it exists.
+
+address field
+Instruction accounts have a new field called address that is used to store constant account public keys. Currently the following methods are supported:
+
+#[account(address = <>)] constraint
+
+Address of the Program<T> type
+
+Address of the Sysvar<T> type
+
+Example
+#[derive(Accounts)]
+pub struct AddressField<'info> {
+    pub metadata_program: Program<'info, Metadata>,
+}
+generates:
+
+"accounts": [
+  {
+    "name": "metadata_program",
+    "address": "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+  }
+]
+pda field
+This field is generated from PDAs that are validated with the seeds constraint. It's not a new field, it works similar to how it used to work with slight changes and many bug fixes.
+
+Example
+#[derive(Accounts)]
+pub struct PdaField<'info> {
+    #[account(seeds = [b"my", authority.key.as_ref()], bump)]
+    pub my_account: Account<'info, MyAccount>,
+    pub authority: Signer<'info>,
+}
+generates:
+
+"accounts": [
+  {
+    "name": "my_account",
+    "pda": {
+      "seeds": [
+        {
+          "kind": "const",
+          "value": [109, 121]
+        },
+        {
+          "kind": "account",
+          "path": "authority"
+        }
+      ]
+    }
+  },
+  {
+    "name": "authority",
+    "signer": true
+  }
+]
+relations field
+This field is generated from the has_one constraint. It's not a new field, however, its behavior has been modified — the relations field is now being stored in the account that is getting resolved (it used to be the reverse).
+
+Example
+#[derive(Accounts)]
+pub struct RelationsField<'info> {
+    #[account(has_one = authority)]
+    pub my_account: Account<'info, MyAccount>,
+    pub authority: Signer<'info>,
+}
+generates:
+
+"accounts": [
+  { "name": "my_account" },
+  {
+    "name": "authority",
+    "signer": true,
+    "relations": ["my_account"]
+  }
+]
+Resolution in TypeScript
+There are too many changes to the account resolution logic in the TS library, however, we can skip a good chunk of them since they're mostly internal.
+
+One change that affects everyone is the change in the accounts method. Even though the TS library had some support for account resolution, it had no type-level support for it — all accounts were essentially typed as partial, and there was no way to know which accounts were resolvable and which were not.
+
+There are now 3 methods to specify accounts with the transaction builder:
+
+accounts: This method is now fully type-safe based on the resolution fields in the IDL, making it much easier to only specify the accounts that are actually needed.
+accountsPartial: This method keeps the old behavior and let's you specify all accounts including the resolvable ones.
+accountsStrict: If you don't want to use account resolution and specify all accounts manually (unchanged).
+Another change that affects most projects is the removal of "magic" account names. The TS library used to autofill common program and sysvar accounts based on their name, e.g. systemProgram, however, this is no longer necessary with the introduction of the address field which is used to resolve all program and sysvars by default.
+
+resolution feature
+Along with the above changes, the seeds feature has been renamed to resolution and is now enabled by default unless explicitly set to false in Anchor.toml.
+
+Downsides
+While the vast majority of changes are advantageous, there are some downsides to consider.
+
+Generation times
+Rust is not known for its super-fast compile times. The current generation times are not even comparable to the old generation method (parse) because the current method requires building a binary while the old method only parses the files which was almost instant.
+
+There are a few possible ways to reduce the effect of this problem:
+
+Disable IDL generation with anchor build command by default
+Add a flag to disable IDL generation with anchor build
+Implement a sort of diff logic based on the source code of the program to decide whether the IDL should be generated
+IDL size
+The new IDL stores significantly more data than it used to which results in larger IDL sizes.
+
+In order to offset some of the increase in the IDL size, most fields in the IDL are skipped on serialization, including bool fields like signer:
+
+"accounts": [
+  {
+    "name": "signer",
+    "writable": true,
+    "signer": true
+  },
+  {
+    "name": "system_program",
+    "address": "11111111111111111111111111111111"
+  }
+]
+Existing tooling
+A great number of dev-tools in the Solana ecosystem depends on IDLs, these tools will need to be updated in order to be compatible with the new IDL.
+
+Feedback
+If you used Anchor IDL's in any sort of way and ran into problems in the past, this is a great time to try the new one and give feedback.
+
+Here is the list of things that would be great to have feedback on:
+
+Regressions: any kind of regression in generation or client usage
+Bugs: any bug you encounter
+Requests: anything that you think is missing or should be changed
+Fixes
+This PR resolves 47 open issues and 8 PRs with regards to the IDL.
+
+Resolves #22, #45, #192, #232, #279, #325, #607, #617, #632, #674, #723, #736, #780, #785, #896, #899, #904, #912, #959, #971 (partial), #1058, #1190, #1213, #1458, #1513, #1550, #1560, #1566, #1641, #1680, #1830, #1849, #1859, #1927, #1971, #1972, #2058, #2104, #2138, #2187, #2286, #2349, #2431, #2441, #2442, #2531, #2545, #2625, #2640, #2653, #2687, #2688, #2710, #2748, #2788.
+

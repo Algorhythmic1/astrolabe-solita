@@ -13,6 +13,7 @@ import {
   IdlTypeBTreeMap,
   Idl,
   isShankIdl,
+  getDefinedTypeName,
 } from './types'
 import { logWarn } from './utils'
 
@@ -54,11 +55,12 @@ function transformDefinition(def: IdlDefinedTypeDefinition) {
 
 function transformType(ty: IdlType) {
   if (isIdlTypeDefined(ty)) {
-    const match = ty.defined.match(mapRx)
+    const definedName = getDefinedTypeName(ty)
+    const match = definedName.match(mapRx)
     if (match == null) return ty
 
     logWarn(
-      `Discovered an incorrectly defined map '${ty.defined}' as part of the IDL.
+      `Discovered an incorrectly defined map '${definedName}' as part of the IDL.
 Solita will attempt to fix this type, but you should inform the authors of the tool that generated the IDL about this issue`
     )
     const [_, mapTy, inner1, inner2] = match
@@ -82,7 +84,8 @@ function resolveType(ts: string): IdlType {
   switch (tslower) {
     case 'string':
       return 'string' as BeetTypeMapKey
-    case 'publicKey':
+    case 'publickey':
+    case 'pubkey':
       return 'publicKey'
     default:
       if (numbersTypeMap[tslower as NumbersTypeMapKey] != null) {

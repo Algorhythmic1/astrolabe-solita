@@ -16,10 +16,8 @@ import {
   SOLANA_WEB3_PACKAGE,
   PrimitiveTypeKey,
   Serializers,
-  IdlTypeDataEnum,
-  IdlTypeEnum,
-  IdlFieldsType,
   isAnchorIdl,
+  getDefinedTypeName,
 } from './types'
 import {
   logDebug,
@@ -28,6 +26,7 @@ import {
   logTrace,
   prepareTargetDir,
   prependGeneratedWarning,
+  logWarn,
 } from './utils'
 import { format, Options } from 'prettier'
 import { Paths } from './paths'
@@ -118,17 +117,6 @@ export class Solita {
     )
   }
 
-  private resolveFieldType = (
-    typeName: string
-  ): IdlFieldsType | IdlTypeEnum | IdlTypeDataEnum | null => {
-    for (const acc of this.idl.accounts ?? []) {
-      if (acc.name === typeName) return acc.type
-    }
-    for (const def of this.idl.types ?? []) {
-      if (def.name === typeName) return def.type
-    }
-    return null
-  }
   // -----------------
   // Render
   // -----------------
@@ -141,7 +129,7 @@ export class Solita {
     const customFiles = this.customFilesByType()
 
     function forceFixable(ty: IdlType) {
-      if (isIdlTypeDefined(ty) && fixableTypes.has(ty.defined)) {
+      if (isIdlTypeDefined(ty) && fixableTypes.has(getDefinedTypeName(ty))) {
         return true
       }
       return false
@@ -250,10 +238,22 @@ export class Solita {
     // -----------------
     const accounts: Record<string, string> = {}
     for (const account of this.idl.accounts ?? []) {
+      // Find the type definition in idl.types by name
+      const typeDef = (this.idl.types ?? []).find((t) => t.name === account.name)
+      if (!typeDef) {
+        logError(`No type definition found for account ${account.name}`)
+        continue
+      }
+      // Only process if typeDef.type has a fields property (IdlFieldsType)
+      if (!('fields' in typeDef.type)) {
+        logWarn(`Skipping account ${account.name} because its type is not a struct or does not have fields.`)
+        continue
+      }
+      const syntheticAccount = { ...account, type: typeDef.type }
       logDebug(`Rendering account ${account.name}`)
-      logTrace('type: %O', account.type)
+      logTrace('type: %O', syntheticAccount.type)
       let code = renderAccount(
-        account,
+        syntheticAccount,
         this.paths.accountsDir,
         accountFiles,
         customFiles,
@@ -261,7 +261,6 @@ export class Solita {
         this.serializers,
         forceFixable,
         programId,
-        this.resolveFieldType,
         this.accountsHaveImplicitDiscriminator
       )
       if (this.prependGeneratedWarning) {

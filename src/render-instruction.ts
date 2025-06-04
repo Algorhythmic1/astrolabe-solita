@@ -30,7 +30,7 @@ type ProcessedAccountKey = IdlInstructionAccount & {
 }
 
 class InstructionRenderer {
-  readonly upperCamelIxName: string
+  readonly pascalIxName: string
   readonly camelIxName: string
   readonly argsTypename: string
   readonly accountsTypename: string
@@ -47,15 +47,11 @@ class InstructionRenderer {
     private readonly typeMapper: TypeMapper,
     private readonly renderAnchorRemainingAccounts: boolean
   ) {
-    this.upperCamelIxName = ix.name
-      .charAt(0)
-      .toUpperCase()
-      .concat(ix.name.slice(1))
-
-    this.camelIxName = ix.name.charAt(0).toLowerCase().concat(ix.name.slice(1))
-
-    this.argsTypename = `${this.upperCamelIxName}InstructionArgs`
-    this.accountsTypename = `${this.upperCamelIxName}InstructionAccounts`
+    this.pascalIxName = this.toPascalCase(ix.name)
+    this.camelIxName =
+      this.pascalIxName.charAt(0).toLowerCase() + this.pascalIxName.slice(1)
+    this.argsTypename = `${this.pascalIxName}InstructionArgs`
+    this.accountsTypename = `${this.pascalIxName}InstructionAccounts`
     this.instructionDiscriminatorName = `${this.camelIxName}InstructionDiscriminator`
     this.structArgName = `${ix.name}Struct`
 
@@ -73,10 +69,10 @@ class InstructionRenderer {
   // -----------------
   private renderIxArgField = (arg: IdlInstructionArg) => {
     const typescriptType = this.typeMapper.map(arg.type, arg.name)
-    return `${arg.name}: ${typescriptType}`
+    return `${InstructionRenderer.toCamelCase(arg.name)}: ${typescriptType}`
   }
 
-  private renderIxArgsType() {
+  private renderIxArgsType(argsTypename: string) {
     if (this.ix.args.length === 0) return ''
     const fields = this.ix.args
       .map((field) => this.renderIxArgField(field))
@@ -85,10 +81,9 @@ class InstructionRenderer {
     const code = `
 /**
  * @category Instructions
- * @category ${this.upperCamelIxName}
  * @category generated
  */
-export type ${this.argsTypename} = {
+export type ${argsTypename} = {
   ${fields}
 }`.trim()
     return code
@@ -219,6 +214,7 @@ ${typeMapperImports.join('\n')}`.trim()
 
     const statements = processedKeys
       .map((processedKey, idx) => {
+        const camelName = InstructionRenderer.toCamelCase(processedKey.name)
         if (!processedKey.optional) {
           const accountMeta = renderRequiredAccountMeta(
             processedKey,
@@ -231,16 +227,16 @@ ${typeMapperImports.join('\n')}`.trim()
           .slice(0, idx)
           .filter((x) => x.optional)
         const requiredChecks = requiredOptionals
-          .map((x) => `accounts.${x.name} == null`)
+          .map((x) => `accounts.${InstructionRenderer.toCamelCase(x.name)} == null`)
           .join(' || ')
         const checkRequireds =
           requiredChecks.length > 0
-            ? `if (${requiredChecks}) { throw new Error('When providing \\'${processedKey.name}\\' then ` +
+            ? `if (${requiredChecks}) { throw new Error('When providing \'${camelName}\' then ` +
               `${requiredOptionals
-                .map((x) => `\\'accounts.${x.name}\\'`)
+                .map((x) => `\'accounts.${InstructionRenderer.toCamelCase(x.name)}\'`)
                 .join(', ')} need(s) to be provided as well.') }`
             : ''
-        const pubkey = `accounts.${processedKey.name}`
+        const pubkey = `accounts.${camelName}`
         const accountMeta = renderAccountMeta(
           pubkey,
           processedKey.isMut.toString(),
@@ -251,7 +247,7 @@ ${typeMapperImports.join('\n')}`.trim()
         // NOTE: we purposely don't add the default resolution here since the intent is to
         // only pass that account when it is provided
         return `
-if (accounts.${processedKey.name} != null) {
+if (accounts.${camelName} != null) {
   ${checkRequireds}
   keys.push(${accountMeta})
 }`.trim()
@@ -289,16 +285,17 @@ if (accounts.${processedKey.name} != null) {
   // AccountsType
   // -----------------
 
-  private renderAccountsType(processedKeys: ProcessedAccountKey[]) {
+  private renderAccountsType(processedKeys: ProcessedAccountKey[], accountsTypename: string) {
     if (processedKeys.length === 0) return ''
     const web3 = SOLANA_WEB3_EXPORT_NAME
     const fields = processedKeys
       .map((x) => {
+        const propName = InstructionRenderer.toCamelCase(x.name)
         if (x.knownPubkey != null) {
-          return `${x.name}?: ${web3}.PublicKey`
+          return `${propName}?: ${web3}.PublicKey`
         }
         const optional = x.optional ? '?' : ''
-        return `${x.name}${optional}: ${web3}.PublicKey`
+        return `${propName}${optional}: ${web3}.PublicKey`
       })
       .join('\n  ')
 
@@ -316,8 +313,9 @@ if (accounts.${processedKey.name} != null) {
 
         const optional = x.optional ? ' (optional) ' : ' '
         const desc = isIdlInstructionAccountWithDesc(x) ? x.desc : ''
+        // Use camelCase in the property comment as well
         return (
-          `* @property [${attrs.join(', ')}] ` + `${x.name}${optional}${desc} `
+          `* @property [${attrs.join(', ')}] ` + `${InstructionRenderer.toCamelCase(x.name)}${optional}${desc} `
         )
       })
 
@@ -328,18 +326,16 @@ if (accounts.${processedKey.name} != null) {
 
     const docs = `
 /**
-  * Accounts required by the _${this.ix.name}_ instruction${properties}
+  * Accounts required by the _${accountsTypename}_ instruction${properties}
   * @category Instructions
-  * @category ${this.upperCamelIxName}
   * @category generated
   */
 `.trim()
     return `${docs}
-          export type ${this.accountsTypename} = {
+export type ${accountsTypename} = {
   ${fields}
   ${anchorRemainingAccounts}
-        }
-        `
+}`
   }
 
   private renderAccountsParamDoc(processedKeys: ProcessedAccountKey[]) {
@@ -360,24 +356,24 @@ if (accounts.${processedKey.name} != null) {
     return this.typeMapper.mapSerdeFields(this.ix.args)
   }
 
-  private renderDataStruct(args: TypeMappedSerdeField[]) {
+  private renderDataStruct(args: TypeMappedSerdeField[], argsTypename: string) {
     const discriminatorField = this.typeMapper.mapSerdeField(
       this.instructionDiscriminator.getField()
     )
     const discriminatorType = this.instructionDiscriminator.renderType()
+    const camelCasedArgs = args.map(arg => ({ ...arg, name: InstructionRenderer.toCamelCase(arg.name) }))
     const struct = renderDataStruct({
-      fields: args,
+      fields: camelCasedArgs,
       discriminatorName: 'instructionDiscriminator',
       discriminatorField,
       discriminatorType,
       structVarName: this.structArgName,
-      argsTypename: this.argsTypename,
+      argsTypename: argsTypename,
       isFixable: this.typeMapper.usedFixableSerde,
     })
     return `
 /**
  * @category Instructions
- * @category ${this.upperCamelIxName}
  * @category generated
  */
 ${struct} `.trim()
@@ -386,12 +382,18 @@ ${struct} `.trim()
   render() {
     this.typeMapper.clearUsages()
 
-    const ixArgType = this.renderIxArgsType()
+    const pascalIxName = this.pascalIxName
+    const argsTypename = `${pascalIxName}InstructionArgs`
+    const accountsTypename = `${pascalIxName}InstructionAccounts`
+    const instructionDiscriminatorName = `${pascalIxName.charAt(0).toLowerCase()}${pascalIxName.slice(1)}InstructionDiscriminator`
+    const structArgName = `${this.ix.name}Struct`
+
+    const ixArgType = this.renderIxArgsType(argsTypename)
     const processedKeys = this.processIxAccounts()
-    const accountsType = this.renderAccountsType(processedKeys)
+    const accountsType = this.renderAccountsType(processedKeys, accountsTypename)
 
     const processedArgs = this.serdeProcess()
-    const argsStructType = this.renderDataStruct(processedArgs)
+    const argsStructType = this.renderDataStruct(processedArgs, argsTypename)
 
     const keys = this.renderIxAccountKeys(processedKeys)
     const accountsParamDoc = this.renderAccountsParamDoc(processedKeys)
@@ -412,7 +414,7 @@ ${struct} `.trim()
         ? ['', '', '', '']
         : [
             `\n * @param args to provide as instruction data to the program\n * `,
-            `args: ${this.argsTypename} `,
+            `args: ${argsTypename} `,
             '...args',
             ', ',
           ]
@@ -422,26 +424,27 @@ ${struct} `.trim()
       this.defaultOptionalAccounts,
       processedKeys.some((x) => x.optional)
     )
+    const functionName = `create${pascalIxName}Instruction`
     return `${imports}
 
 ${enums}
 ${ixArgType}
 ${argsStructType}
 ${accountsType}
-    export const ${this.instructionDiscriminatorName} = ${instructionDisc};
+    export const ${instructionDiscriminatorName} = ${instructionDisc};
 
     /**
-     * Creates a _${this.upperCamelIxName}_ instruction.
+     * Creates a _${pascalIxName}_ instruction.
     ${optionalAccountsComment}${accountsParamDoc}${createInstructionArgsComment}
      * @category Instructions
-     * @category ${this.upperCamelIxName}
+     * @category ${pascalIxName}
      * @category generated
      */
-    export function create${this.upperCamelIxName}Instruction(
+    export function ${functionName}(
       ${accountsArg}${createInstructionArgs}${programIdArg}
     ) {
-      const [data] = ${this.structArgName}.serialize({
-        instructionDiscriminator: ${this.instructionDiscriminatorName},
+      const [data] = ${structArgName}.serialize({
+        instructionDiscriminator: ${instructionDiscriminatorName},
     ${createInstructionArgsSpread}
     });
     const keys: ${web3}.AccountMeta[] = ${keys}
@@ -453,6 +456,17 @@ ${accountsType}
   return ix; 
 }
 `
+  }
+
+  // Utility to convert snake_case to PascalCase (UpperCamelCase), removing leading 'create_'
+  private toPascalCase(s: string) {
+    return s
+      .replace(/^create_/, '') // Remove leading create_
+      .replace(/(^|_)([a-z])/g, (_, __, c) => c.toUpperCase());
+  }
+
+  static toCamelCase(s: string) {
+    return s.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
   }
 }
 
@@ -513,10 +527,11 @@ function deriveCollectionAccountsName(
 function renderOptionalAccountMetaDefaultingToProgramId(
   processedKey: ProcessedAccountKey
 ): string {
-  const { name, isMut, isSigner } = processedKey
-  const pubkey = `accounts.${name} ?? programId`
-  const mut = isMut ? `accounts.${name} != null` : 'false'
-  const signer = isSigner ? `accounts.${name} != null` : 'false'
+  const { name, isMut = false, isSigner = false } = processedKey
+  const camelName = InstructionRenderer.toCamelCase(name)
+  const pubkey = `accounts.${camelName} ?? programId`
+  const mut = isMut ? `accounts.${camelName} != null` : 'false'
+  const signer = isSigner ? `accounts.${camelName} != null` : 'false'
   return renderAccountMeta(pubkey, mut, signer)
 }
 
@@ -524,11 +539,12 @@ function renderRequiredAccountMeta(
   processedKey: ProcessedAccountKey,
   programIdPubkey: string
 ): string {
-  const { name, isMut, isSigner, knownPubkey } = processedKey
+  const { name, isMut = false, isSigner = false, knownPubkey } = processedKey
+  const camelName = InstructionRenderer.toCamelCase(name)
   const pubkey =
     knownPubkey == null
-      ? `accounts.${name}`
-      : `accounts.${name} ?? ${renderKnownPubkeyAccess(
+      ? `accounts.${camelName}`
+      : `accounts.${camelName} ?? ${renderKnownPubkeyAccess(
           knownPubkey,
           programIdPubkey
         )}`

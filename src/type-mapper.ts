@@ -28,6 +28,7 @@ import {
   PrimaryTypeMap,
   PrimitiveTypeKey,
   TypeMappedSerdeField,
+  getDefinedTypeName,
 } from './types'
 import { getOrCreate, logDebug, withoutTsExtension } from './utils'
 import { strict as assert } from 'assert'
@@ -138,6 +139,8 @@ export class TypeMapper {
   // Map TypeScript Type
   // -----------------
   private mapPrimitiveType(ty: PrimitiveTypeKey, name: string) {
+    // Treat 'pubkey' as 'publicKey' for mapping
+    if ((ty as string) === 'pubkey') ty = 'publicKey' as PrimitiveTypeKey
     this.assertBeetSupported(ty, 'map primitive type')
     const mapped = this.primaryTypeMap[ty]
     let typescriptType = mapped.ts
@@ -221,8 +224,8 @@ export class TypeMapper {
   private mapDefinedType(ty: IdlTypeDefined) {
     const fullFileDir = this.definedTypesImport(ty)
     const imports = getOrCreate(this.localImportsByPath, fullFileDir, new Set())
-    imports.add(ty.defined)
-    return ty.defined
+    imports.add(getDefinedTypeName(ty))
+    return getDefinedTypeName(ty)
   }
 
   private mapEnumType(ty: IdlTypeEnum, name: string) {
@@ -254,7 +257,7 @@ export class TypeMapper {
       return this.mapArrayType(ty, name)
     }
     if (isIdlTypeDefined(ty)) {
-      const alias = this.typeAliases.get(ty.defined)
+      const alias = this.typeAliases.get(getDefinedTypeName(ty))
       return alias == null
         ? this.mapDefinedType(ty)
         : this.mapPrimitiveType(alias, name)
@@ -290,6 +293,8 @@ export class TypeMapper {
   // Map Serde
   // -----------------
   private mapPrimitiveSerde(ty: PrimitiveTypeKey, name: string) {
+    // Treat 'pubkey' as 'publicKey' for serialization
+    if ((ty as string) === 'pubkey') ty = 'publicKey' as PrimitiveTypeKey
     this.assertBeetSupported(ty, `account field ${name}`)
 
     if (ty === 'string') return this.mapStringSerde(ty)
@@ -356,7 +361,7 @@ export class TypeMapper {
   private mapDefinedSerde(ty: IdlTypeDefined) {
     const fullFileDir = this.definedTypesImport(ty)
     const imports = getOrCreate(this.localImportsByPath, fullFileDir, new Set())
-    const varName = beetVarNameFromTypeName(ty.defined)
+    const varName = beetVarNameFromTypeName(getDefinedTypeName(ty))
     imports.add(varName)
     return varName
   }
@@ -466,7 +471,7 @@ export class TypeMapper {
       return this.mapEnumSerde(ty, name)
     }
     if (isIdlTypeDefined(ty)) {
-      const alias = this.typeAliases.get(ty.defined)
+      const alias = this.typeAliases.get(getDefinedTypeName(ty))
       return alias == null
         ? this.mapDefinedSerde(ty)
         : this.mapPrimitiveSerde(alias, name)
@@ -557,10 +562,10 @@ export class TypeMapper {
   }
   private definedTypesImport(ty: IdlTypeDefined) {
     return (
-      this.accountTypesPaths.get(ty.defined) ??
-      this.customTypesPaths.get(ty.defined) ??
+      this.accountTypesPaths.get(getDefinedTypeName(ty)) ??
+      this.customTypesPaths.get(getDefinedTypeName(ty)) ??
       assert.fail(
-        `Unknown type ${ty.defined} is neither found in types nor an Account`
+        `Unknown type ${getDefinedTypeName(ty)} is neither found in types nor an Account`
       )
     )
   }
