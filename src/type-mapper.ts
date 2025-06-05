@@ -501,7 +501,9 @@ export class TypeMapper {
     field: IdlField | IdlInstructionArg
   ): TypeMappedSerdeField => {
     const ty = this.mapSerde(field.type, field.name)
-    return { name: field.name, type: ty }
+    // Always camelCase the field name for serialization
+    const camelCaseName = field.name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+    return { name: camelCaseName, type: ty }
   }
 
   mapSerdeFields(

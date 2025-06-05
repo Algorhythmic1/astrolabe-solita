@@ -146,6 +146,9 @@ export class Solita {
     logDebug('Rendering %d types', this.idl.types?.length ?? 0)
     adaptIdl(this.idl)
 
+    // Collect account type names for filtering
+    const accountTypeNames = new Set((this.idl.accounts ?? []).map(acc => acc.name))
+
     if (this.idl.types != null) {
       for (let ty of this.idl.types) {
         // Here we detect if the type itself is fixable solely based on its
@@ -163,6 +166,8 @@ export class Solita {
       }
 
       for (const ty of this.idl.types) {
+        // Skip types that are also account types
+        if (accountTypeNames.has(ty.name)) continue
         logDebug(`Rendering type ${ty.name}`)
         logTrace('kind: %s', ty.type.kind)
         if (isIdlFieldsType(ty.type)) {
@@ -382,10 +387,9 @@ export class Solita {
       await fs.writeFile(this.paths.typeFile(name), code, 'utf8')
     }
     logDebug('Writing index.ts exporting all types')
-    const reexports = Object.keys(types)
-    // NOTE: this allows account types to be referenced via `defined.<AccountName>`, however
-    // it would break if we have an account used that way, but no types
-    // If that occurs we need to generate the `types/index.ts` just reexporting accounts
+    // Only re-export non-account types in types/index.ts
+    const accountTypeNames = new Set((this.idl.accounts ?? []).map(acc => acc.name))
+    const reexports = Object.keys(types).filter(name => !accountTypeNames.has(name))
     const indexCode = this.renderImportIndex(reexports.sort(), 'types')
     await fs.writeFile(this.paths.typeFile('index'), indexCode, 'utf8')
   }
